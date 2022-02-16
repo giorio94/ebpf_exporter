@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"log"
+	"net"
 	"net/http"
+	"os/signal"
+	"syscall"
 
 	"github.com/cloudflare/ebpf_exporter/config"
 	"github.com/cloudflare/ebpf_exporter/exporter"
+	"github.com/cloudflare/ebpf_exporter/kubernetes"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
@@ -18,13 +23,33 @@ func main() {
 	debug := kingpin.Flag("debug", "Enable debug").Bool()
 	listenAddress := kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests").Default(":9435").String()
 	metricsPath := kingpin.Flag("web.telemetry-path", "Path under which to expose metrics").Default("/metrics").String()
+	namespace := kingpin.Flag("nginx.namespace", "The namespace where the nginx pods are in execution").String()
+	node := kingpin.Flag("nginx.node", "The node under observation (to retrieve the nginx pod IP)").Default("/metrics").String()
 	kingpin.Version(version.Print("ebpf_exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
 
+	log.Print("Waiting to retrieve observed IP address")
+	ipch, err := kubernetes.SetupIPRetriever(*namespace, *node)
+	if err != nil {
+		log.Fatal("Failed to setup the ip retriever", err)
+		return
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	var ip net.IP
+	select {
+	case ip = <-ipch:
+		log.Printf("Retrieved observed IP address: %s", ip.String())
+		cancel()
+	case <-ctx.Done():
+		log.Fatal("Context expired while searching for IP")
+		return
+	}
+
 	config := config.Config{}
 
-	err := yaml.NewDecoder(*configFile).Decode(&config)
+	err = yaml.NewDecoder(*configFile).Decode(&config)
 	if err != nil {
 		log.Fatalf("Error reading config file: %s", err)
 	}
@@ -34,7 +59,7 @@ func main() {
 		log.Fatalf("Error creating exporter: %s", err)
 	}
 
-	err = e.Attach()
+	err = e.Attach(ip)
 	if err != nil {
 		log.Fatalf("Error attaching exporter: %s", err)
 	}

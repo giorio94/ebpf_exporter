@@ -2,8 +2,10 @@ package exporter
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -65,13 +67,13 @@ func New(cfg config.Config) (*Exporter, error) {
 }
 
 // Attach injects eBPF into kernel and attaches necessary kprobes
-func (e *Exporter) Attach() error {
+func (e *Exporter) Attach(observedIP net.IP) error {
 	for _, program := range e.config.Programs {
 		if _, ok := e.modules[program.Name]; ok {
 			return fmt.Errorf("multiple programs with name %q", program.Name)
 		}
 
-		code, err := e.code(program)
+		code, err := e.code(program, observedIP)
 		if err != nil {
 			return err
 		}
@@ -108,7 +110,9 @@ func (e *Exporter) Attach() error {
 }
 
 // code generates program code, augmented if necessary
-func (e Exporter) code(program config.Program) (string, error) {
+func (e Exporter) code(program config.Program, observedIP net.IP) (string, error) {
+	program.Code = strings.ReplaceAll(program.Code, "__LOCAL_ADDRESS__", fmt.Sprintf("0x%x", binary.LittleEndian.Uint32(observedIP.To4()[0:4])))
+
 	preamble := ""
 
 	if len(program.Kaddrs) > 0 && len(e.kaddrs) == 0 {
