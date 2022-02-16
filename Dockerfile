@@ -1,43 +1,42 @@
-# Building on Ubuntu Bionic (18.04) and supporting glibc 2.27. This allows
-# the following distros (and newer versions) to run the resulting binaries:
-# * Ubuntu Bionic (2.27)
-# * Debian Buster (2.28)
-# * CentOS 8 (2.28)
-FROM ubuntu:bionic as builder
+# https://github.com/vanneback/ebpf_exporter_dockerfile/blob/782fd0bac75b5be49ef66c3b0036e8243e8b9be6/Dockerfile
 
-RUN apt-get update && \
-    apt-get -y --no-install-recommends install build-essential fakeroot pbuilder aptitude git openssh-client ca-certificates
+FROM ubuntu:20.04 as builder
 
-RUN git clone --branch=v0.22.0 --depth=1 https://github.com/iovisor/bcc.git /root/bcc && \
-    git -C /root/bcc submodule update --init --recursive
+ENV DEBIAN_FRONTEND noninteractive
 
-RUN cd /root/bcc && \
-    /usr/lib/pbuilder/pbuilder-satisfydepends && \
-    PARALLEL=$(nproc) ./scripts/build-deb.sh release
+RUN apt update && apt install -y --no-install-recommends bison build-essential cmake flex git python3 python3-distutils \
+    libedit-dev libllvm7 llvm-7-dev libclang-7-dev zlib1g-dev libelf-dev libfl-dev ca-certificates golang-1.16
 
-FROM ubuntu:bionic
+WORKDIR /tmp
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git build-essential libelf1 software-properties-common
+RUN git clone https://github.com/iovisor/bcc.git && \
+    mkdir bcc/build; cd bcc/build && \
+    cmake .. && \
+    make && \
+    make install
 
-RUN add-apt-repository ppa:longsleep/golang-backports && \
-    apt-get install -y --no-install-recommends golang-1.17-go
+WORKDIR /tmp/builder
 
-ENV PATH="/usr/lib/go-1.17/bin:$PATH"
+COPY go.mod ./go.mod
+COPY go.sum ./go.sum
+RUN  /usr/lib/go-1.16/bin/go mod download
 
-COPY --from=builder /root/bcc/libbcc_*.deb /tmp/libbcc.deb
+COPY . ./
+RUN  /usr/lib/go-1.16/bin/go build -ldflags="-s -w"  ./cmd/ebpf_exporter
 
-RUN dpkg -i /tmp/libbcc.deb
 
-COPY ./ /go/ebpf_exporter
+FROM ubuntu:20.04
 
-RUN cd /go/ebpf_exporter && \
-    GOPROXY="off" GOFLAGS="-mod=vendor" go install -v -ldflags=" \
-    -X github.com/prometheus/common/version.Version=$(git describe) \
-    -X github.com/prometheus/common/version.Branch=$(git rev-parse --abbrev-ref HEAD) \
-    -X github.com/prometheus/common/version.Revision=$(git rev-parse --short HEAD) \
-    -X github.com/prometheus/common/version.BuildUser=docker@$(hostname) \
-    -X github.com/prometheus/common/version.BuildDate=$(date --iso-8601=seconds) \
-    " ./cmd/ebpf_exporter
+RUN DEBIAN_FRONTEND=noninteractive apt update && apt -y --no-install-recommends install libclang1-7 libelf1
 
-RUN /root/go/bin/ebpf_exporter --version
+COPY --from=builder /tmp/builder/ebpf_exporter /usr/local/bin/ebpf_exporter
+COPY --from=builder /tmp/bcc/build/src/cc/libbcc.so.0.24.0 /usr/lib/x86_64-linux-gnu
+COPY --from=builder /tmp/bcc/build/src/cc/libbcc_bpf.so.0.24.0 /usr/lib/x86_64-linux-gnu
+
+RUN ldconfig -v -nN /usr/lib/x86_64-linux-gnu/ && \
+    echo '#!/bin/bash' > /usr/local/bin/entrypoint.sh && \
+    echo 'apt install -y -qq linux-headers-$(uname -r)' >> /usr/local/bin/entrypoint.sh && \
+    echo 'exec /usr/local/bin/ebpf_exporter $@' >> /usr/local/bin/entrypoint.sh && \
+    chmod 755 /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
