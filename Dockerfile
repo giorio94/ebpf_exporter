@@ -27,7 +27,8 @@ RUN  /usr/lib/go-1.16/bin/go build -ldflags="-s -w"  ./cmd/ebpf_exporter
 
 FROM ubuntu:20.04
 
-RUN DEBIAN_FRONTEND=noninteractive apt update && apt -y --no-install-recommends install libclang1-7 libelf1
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt update && apt -y --no-install-recommends install libclang1-7 libelf1 && apt clean
 
 COPY --from=builder /tmp/builder/ebpf_exporter /usr/local/bin/ebpf_exporter
 COPY --from=builder /tmp/bcc/build/src/cc/libbcc.so.0.24.0 /usr/lib/x86_64-linux-gnu
@@ -35,7 +36,7 @@ COPY --from=builder /tmp/bcc/build/src/cc/libbcc_bpf.so.0.24.0 /usr/lib/x86_64-l
 
 RUN ldconfig -v -nN /usr/lib/x86_64-linux-gnu/ && \
     echo '#!/bin/bash' > /usr/local/bin/entrypoint.sh && \
-    echo 'apt install -y -qq linux-headers-$(uname -r)' >> /usr/local/bin/entrypoint.sh && \
+    echo 'apt update && apt install -y -qq linux-headers-$(uname -r)' >> /usr/local/bin/entrypoint.sh && \
     echo 'exec /usr/local/bin/ebpf_exporter $@' >> /usr/local/bin/entrypoint.sh && \
     chmod 755 /usr/local/bin/entrypoint.sh
 
